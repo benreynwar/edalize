@@ -59,9 +59,17 @@ class Edatool(object):
         self.parameters  = edam.get('parameters', {})
 
         self.work_root = work_root
+        if work_root is None:
+            cwd = os.getcwd()
+            self.stdout_fn = os.path.join(cwd, 'stdout.txt')
+            self.stderr_fn = os.path.join(cwd, 'stderr.txt')
+        else:
+            self.stdout_fn = os.path.join(self.work_root, 'stdout.txt')
+            self.stderr_fn = os.path.join(self.work_root, 'stderr.txt')
         self.env = os.environ.copy()
 
         self.env['WORK_ROOT'] = self.work_root
+        self.process = None
 
         self.plusarg     = OrderedDict()
         self.vlogparam   = OrderedDict()
@@ -278,17 +286,65 @@ class Edatool(object):
                 msg = "'{}' exited with error code {}"
                 raise RuntimeError(msg.format(script['name'], e.returncode))
 
-    def _run_tool(self, cmd, args=[]):
+    def get_lines(self, filename):
+        with open(filename, 'r') as f:
+            while True:
+                lines = []
+                line = f.readline()
+                while line:
+                    lines.append(line)
+                    line = f.readline()
+                yield lines
+
+    def get_stdout_lines(self):
+        lines = next(self.get_lines(self.stdout_fn))
+        return lines
+
+    def get_stderr_lines(self):
+        lines = next(self.get_lines(self.stderr_fn))
+        return lines
+
+    def _run_tool(self, cmd, args=[], output_stdout=True, output_stderr=True,
+                  line_callback=None):
+        stdout = open(self.stdout_fn, 'w')
+        stderr = open(self.stderr_fn, 'w')
+
+        def process_stdout_line(line):
+            if output_stdout:
+                print(line)
+            if line_callback:
+                line_callback(line)
+
+        def process_stderr_line(line):
+            if output_stdout:
+                print(line)
+            if line_callback:
+                line_callback(line)
+
+
         logger.debug("Running " + cmd)
         logger.debug("args  : " + ' '.join(args))
-
         try:
-            subprocess.check_call([cmd] + args,
-                                  cwd = self.work_root,
-                                  stdin=subprocess.PIPE),
+            self.process = subprocess.Popen(
+                [cmd]+args,
+                cwd=self.work_root,
+                stdin=subprocess.PIPE,
+                stdout=stdout,
+                stderr=stderr,
+            )
         except FileNotFoundError:
             _s = "Command '{}' not found. Make sure it is in $PATH"
             raise RuntimeError(_s.format(cmd))
-        except subprocess.CalledProcessError:
+
+        finished = False
+        stdout_generator = self.get_lines(self.stdout_fn)
+        stderr_generator = self.get_lines(self.stderr_fn)
+        while not finished:
+            finished = (self.process.poll() is not None)
+            for line in next(stdout_generator):
+                process_stdout_line(line)
+            for line in next(stderr_generator):
+                process_stderr_line(line)
+        if self.process.returncode != 0:
             _s = "'{}' exited with an error code"
             raise RuntimeError(_s.format(cmd))
